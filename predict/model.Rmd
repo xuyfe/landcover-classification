@@ -25,46 +25,44 @@ load('data/labeled_points.Rdata')
 labeled = labeled %>% 
   select(ID, landcover)
 
-dl = labeled_train %>%
-  left_join(labeled, by = 'ID') %>%
-  mutate(veg = ifelse(landcover %in% c('natforest', 'orchard', 'cropland'), 1, 0), 
-         NDVI100 = NDVI*100, 
-         NDBI100 = NDBI*100)
+dl <- labeled_train %>%
+      left_join(labeled, by = 'ID') %>%
+      mutate(veg = ifelse(landcover %in% c('natforest', 'orchard', 'cropland'), 1, 0), 
+             NDVI100 = NDVI*100, 
+             NDBI100 = NDBI*100)
 ```
 
 Let's compute mean band values for each location. 
 
 ```{r}
-dm = dl %>%
-  group_by(ID) %>%
-  summarise(
-    B1   = mean(B1, na.rm=T),
-    B2   = mean(B2, na.rm=T),
-    B3   = mean(B3, na.rm=T),
-    B4   = mean(B4, na.rm=T),
-    B5   = mean(B5, na.rm=T),
-    B6_VCID_1 = mean(B6_VCID_1, na.rm=T),
-    B6_VCID_2 = mean(B6_VCID_2, na.rm=T), ##  cor is .998 with B6_VCID_1
-    B7        = mean(B7, na.rm=T),
-    NDVI100   = mean(NDVI100, na.rm=T), 
-    #NDBI100   = mean(NDBI100, na.rm=T), ## causes warnings with lasso
-    #EVI  = mean(EVI, na.rm=T),
-    landcover = unique(landcover), 
-    veg = unique(veg)) %>%
-  select(-ID, -landcover)
+dm <- dl %>%
+      group_by(ID) %>%
+      summarise(
+        B1   = mean(B1, na.rm=T),
+        B2   = mean(B2, na.rm=T),
+        B3   = mean(B3, na.rm=T),
+        B4   = mean(B4, na.rm=T),
+        B5   = mean(B5, na.rm=T),
+        B6_VCID_1 = mean(B6_VCID_1, na.rm=T),
+        B6_VCID_2 = mean(B6_VCID_2, na.rm=T),
+        B7        = mean(B7, na.rm=T),
+        NDVI100   = mean(NDVI100, na.rm=T), 
+        # NDBI100   = mean(NDBI100, na.rm=T), ## causes warnings with lasso
+        # EVI  = mean(EVI, na.rm=T),          ## not relevant
+        landcover = unique(landcover), 
+        veg = unique(veg)) %>%
+      select(-ID, -landcover)
   
  
-ht(dm) ## head and tail, each with 2 rows
+ht(dm)
 ```
 
-We are interested once again in modeling the probability of `veg` as a function of the mean band values. We will compare the following four models:
+We are interested in modeling the probability of `veg` as a function of the mean band values. We will compare the following four models:
 
 - logistic regression (with no regularization) using only `NDVI100` 
 - logistic regression (with no regularization) using all band values
-- logistic regression with ridge regularization using all band values 
-- logistic regression with lasso regularization using all band values
-
-Note that for logistic regression with regularization (3rd and 4th models), you can use the `cv.glmnet` function in the `glmnet` package as we did with linear regression, but with the argument `family = binomial` added.
+- logistic regression with Ridge regularization using all band values 
+- logistic regression with Lasso regularization using all band values
 
 \newpage
 
@@ -74,17 +72,17 @@ Fit models with all of the data and find (in-sample) predicted probabilities for
 
 ```{r}
 ## logistic regression with no regularization using only NDVI100
-m1 = glm(veg ~ NDVI100, data = dm, family = binomial)
+m1 <- glm(veg ~ NDVI100, data = dm, family = binomial)
 dm$predm1 <- predict(m1, type = 'response', newdata = dm)
 summary(m1)
 
 ## logistic regression with no regularization using all band values
-m2 = glm(veg ~ ., data = dm, family = binomial)
+m2 <- glm(veg ~ ., data = dm, family = binomial)
 dm$predm2 <- predict(m2, type = 'response', newdata = dm)
 summary(m2)
 
 ## logistic regression with ridge regularization using all band values
-x = model.matrix(veg ~ B1 + B2 + B3 + B4 + B5 + 
+x <- model.matrix(veg ~ B1 + B2 + B3 + B4 + B5 + 
                    B6_VCID_1 + B6_VCID_2 + B7 + NDVI100, data = dm)[,-1]
 y <- dm$veg
 m3 <- cv.glmnet(x, y, family = 'binomial', alpha = 0)
@@ -101,12 +99,11 @@ summary(m4)
 head(dm)
 ```
 
-
 To find the trace curves, we need to plot the coefficients as functions of lambda:
 
 ```{r, warning=FALSE}
-coefs.m3 = coef(m3, s = m3$lambda)
-coefs.m4 = coef(m4, s = m4$lambda)
+coefs.m3 <- coef(m3, s = m3$lambda)
+coefs.m4 <- coef(m4, s = m4$lambda)
 colnames(coefs.m3) = paste0('lambda', round(m3$lambda,6))
 colnames(coefs.m4) = paste0('lambda', round(m4$lambda,6))
 
@@ -125,7 +122,7 @@ coefs.m4   <- coefs.m4   %>%
   mutate(model='Lasso')
 
 # bind rows
-coefs1 = bind_rows(coefs.m3, coefs.m4) %>%
+coefs1 <- bind_rows(coefs.m3, coefs.m4) %>%
   mutate(name = as.numeric(gsub('lambda', '', name))) %>%
   filter(rowname!='(Intercept)') %>%
   rename(lambda=name, 
@@ -137,12 +134,12 @@ head(coefs1)
 Now we can plot the trace curves.
 
 ```{r, fig.width=8, fig.height=8}
-lambda.lines = data.frame(model=c('Ridge', 'Lasso'), 
+lambda.lines <- data.frame(model=c('Ridge', 'Lasso'), 
                           lambda.min = c(m3$lambda.min, m4$lambda.min), 
                           lambda.1se = c(m3$lambda.1se, m4$lambda.1se))
-dg = coefs1
+dg <- coefs1
 
-g = ggplot(data=dg, aes(x=lambda, y=value, group=var, color=var))+
+g <- ggplot(data=dg, aes(x=lambda, y=value, group=var, color=var))+
     geom_line(alpha=1, linewidth=1)+
     facet_wrap(~model, ncol=1, scales='free_y')+
     geom_vline(data=lambda.lines, aes(xintercept=lambda.min),
@@ -173,14 +170,13 @@ set.seed(123)
 k=5
 
 # create a vector of fold numbers, repeating 1:k until reaching the number of rows in the data
-folds = rep(1:k, 
-            length.out = nrow(dm))
+folds <- rep(1:k, length.out = nrow(dm))
 
 # create a new column in the data frame that randomly assigns a fold to each row without replacement 
 # (so that we don't have a row assigned to two or more folds)
-dm$fold = sample(folds, 
-                nrow(dm), 
-                replace = F)
+dm$fold <- sample(folds, 
+                  row(dm), 
+                  replace = F)
 
 # view the first few rows of the data frame to see the fold assignments
 head(dm)
@@ -188,7 +184,7 @@ head(dm)
 
 ```{r}
 # create a data frame to keep track of the metrics
-metrics = data.frame(fold = 1:k,
+metrics <- data.frame(fold = 1:k,
                      llr1se = NA, 
                      llrmin = NA,
                      lllas1se = NA,
@@ -214,10 +210,10 @@ for (j in 1:k){
   ## ======
   
   ## logistic regression with no regularization using only NDVI100
-  m1 = glm(veg ~ NDVI100, data = dm[train.rows, 1:10], family = "binomial")
+  m1 <- glm(veg ~ NDVI100, data = dm[train.rows, 1:10], family = "binomial")
 
   ## logistic regression with no regularization using all band values
-  m2 = glm(veg ~ ., data = dm[train.rows,1:10], family = "binomial")
+  m2 <- glm(veg ~ ., data = dm[train.rows,1:10], family = "binomial")
   
   ## logistic regression with ridge regularization using all band values
   r.train <- cv.glmnet(x = x[train.rows,], y = dm$veg[train.rows], family = 'binomial', alpha = 0)
