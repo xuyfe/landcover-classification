@@ -2,7 +2,9 @@
 title: "Landcover Classification using Satellite Data"
 author: "Owen Xu Li"
 date: "April 2024"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
