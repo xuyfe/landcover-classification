@@ -1,2 +1,0 @@
-"0","lm <- lm(l2 ~ log(house.value) + county, data = dc, family = binomial, contrasts = list(county = 'contr.sum'))"
-"0","lmer <- glmer(l2 ~ log(house.value) + (1|county), data = dc, family = binomial)"

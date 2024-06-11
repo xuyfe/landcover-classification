@@ -1,7 +1,0 @@
-"0","n.obs.team = d %>% "
-"0","  group_by(team) %>% "
-"0","  summarise(n = n(), "
-"0","            value = mean(score)) %>% "
-"0","  rename(var = team) %>%"
-"0","  mutate(ranef = 'team')"
-"0","n.obs.team %>% head()"

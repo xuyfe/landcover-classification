@@ -1,6 +1,0 @@
-"0","## linear regression model"
-"0","lm1 <- lm(score ~ ha + team + opp, data = d, contrasts = list(team = 'contr.sum',"
-"0","                                                              opp = 'contr.sum'))"
-"0",""
-"0","## mixed effects linear regression model"
-"0","lmer1 <- lmer(score ~ ha + (1|team) + (1|opp), data = d)"

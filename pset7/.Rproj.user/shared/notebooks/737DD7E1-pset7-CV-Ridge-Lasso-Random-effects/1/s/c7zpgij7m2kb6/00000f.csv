@@ -1,3 +1,0 @@
-"0","dc = dc[sample(1:nrow(dc), "
-"0","               5000, "
-"0","               replace = F),] "
