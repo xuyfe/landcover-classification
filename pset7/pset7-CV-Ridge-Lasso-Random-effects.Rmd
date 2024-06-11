@@ -1,0 +1,947 @@
+---
+title: "PSET 07 - CV, Ridge, Lasso, Random Intercepts"
+author: "S&DS 361"
+date: "Due 2024-04-26"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(MASS, exclude = 'select')
+library(lme4)
+library(arm)
+library(tidyverse)
+library(pubtheme)
+library(corrplot)
+library(glmnet)
+library(pROC)
+```
+
+# Landcover
+
+```{r}
+load('data/labeled_points.Rdata')
+
+labeled = labeled %>% 
+  select(ID, landcover)
+
+dl = labeled_train %>%
+  left_join(labeled, by = 'ID') %>%
+  mutate(veg = ifelse(landcover %in% c('natforest', 'orchard', 'cropland'), 
+                      1, 0), 
+         NDVI100 = NDVI*100, 
+         NDBI100 = NDBI*100)
+```
+
+Let's compute mean band values for each location. 
+
+```{r}
+dm = dl %>%
+  group_by(ID) %>%
+  summarise(
+    B1   = mean(B1, na.rm=T),
+    B2   = mean(B2, na.rm=T),
+    B3   = mean(B3, na.rm=T),
+    B4   = mean(B4, na.rm=T),
+    B5   = mean(B5, na.rm=T),
+    B6_VCID_1 = mean(B6_VCID_1, na.rm=T),
+    B6_VCID_2 = mean(B6_VCID_2, na.rm=T), ##  cor is .998 with B6_VCID_1
+    B7        = mean(B7, na.rm=T),
+    NDVI100   = mean(NDVI100, na.rm=T), 
+    #NDBI100   = mean(NDBI100, na.rm=T), ## causes warnings with lasso
+    #EVI  = mean(EVI, na.rm=T),
+    landcover = unique(landcover), 
+    veg = unique(veg)) %>%
+  select(-ID, -landcover)
+  
+ 
+ht(dm) ## head and tail, each with 2 rows
+```
+
+## Data Exploration
+
+
+Recall that there was a lot of collinearity among the mean band values at each location. 
+
+```{r}
+corr = dm %>% 
+  cor(use = 'pairwise.complete.obs')
+corr %>% round(2)
+```
+
+
+```{r}
+corrplot(corr, order = 'hclust', diag=T, type = 'upper', tl.pos = 'tp')
+corrplot(corr, order = 'hclust', diag=F, type = 'lower', tl.pos =  'n', 
+         method='number', 
+         cl.pos = 'n',
+         add = T, 
+         number.cex = 0.8)
+```
+
+Using `order = "hclust"` with rectangles added 
+
+```{r}
+corrplot(corr, 
+         diag = F,
+         order = 'hclust', 
+         addrect = 4)
+```
+
+We are interested once again in modeling the probability of `veg` as a function of the mean band values. We will compare the following four models:
+
+- logistic regression (with no regularization) using only `NDVI100` 
+- logistic regression (with no regularization) using all band values
+- logistic regression with ridge regularization using all band values 
+- logistic regression with lasso regularization using all band values
+
+Note that for logistic regression with regularization (3rd and 4th models), you can use the `cv.glmnet` function in the `glmnet` package as we did with linear regression, but with the argument `family = binomial` added.
+
+\newpage
+
+## 1. Models with all of the data
+
+Fit models with all of the data and find (in-sample) predicted probabilities for each observation. Explore the trace curves and discuss any notable observations. 
+
+```{r}
+## logistic regression with no regularization using only NDVI100
+m1 = glm(veg ~ NDVI100, data = dm, family = binomial)
+dm$predm1 <- predict(m1, type = 'response', newdata = dm)
+summary(m1)
+
+## logistic regression with no regularization using all band values
+m2 = glm(veg ~ ., data = dm, family = binomial)
+dm$predm2 <- predict(m2, type = 'response', newdata = dm)
+summary(m2)
+
+## logistic regression with ridge regularization using all band values
+x = model.matrix(veg ~ B1 + B2 + B3 + B4 + B5 + 
+                   B6_VCID_1 + B6_VCID_2 + B7 + NDVI100, data = dm)[,-1]
+y <- dm$veg
+m3 <- cv.glmnet(x, y, family = 'binomial', alpha = 0)
+dm$predm3 <- predict(m3, newx = x, s = 'lambda.1se', type = 'response')
+summary(m3)
+
+## logistic regression with lasso regularization using all band values
+m4 <- cv.glmnet(x, y, family = 'binomial', alpha = 1)
+dm$predm4 <- predict(m4, newx = x, s = 'lambda.1se', type = 'response')
+summary(m4)
+```
+
+```{r}
+head(dm)
+```
+
+
+To find the trace curves, we need to plot the coefficients as functions of lambda:
+
+```{r, warning=FALSE}
+coefs.m3 = coef(m3, s = m3$lambda)
+coefs.m4 = coef(m4, s = m4$lambda)
+colnames(coefs.m3) = paste0('lambda', round(m3$lambda,6))
+colnames(coefs.m4) = paste0('lambda', round(m4$lambda,6))
+
+coefs.m3   <- coefs.m3   %>% 
+  as.matrix() %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  pivot_longer(cols=-rowname) %>%
+  mutate(model='Ridge')
+
+coefs.m4   <- coefs.m4   %>% 
+  as.matrix() %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  pivot_longer(cols=-rowname) %>%
+  mutate(model='Lasso')
+
+# bind rows
+coefs1 = bind_rows(coefs.m3, coefs.m4) %>%
+  mutate(name = as.numeric(gsub('lambda', '', name))) %>%
+  filter(rowname!='(Intercept)') %>%
+  rename(lambda=name, 
+         var = rowname)
+
+head(coefs1)
+```
+
+Now we can plot the trace curves.
+
+```{r, fig.width=8, fig.height=8}
+lambda.lines = data.frame(model=c('Ridge', 'Lasso'), 
+                          lambda.min = c(m3$lambda.min, m4$lambda.min), 
+                          lambda.1se = c(m3$lambda.1se, m4$lambda.1se))
+dg = coefs1
+
+g = ggplot(data=dg, aes(x=lambda, y=value, group=var, color=var))+
+    geom_line(alpha=1, linewidth=1)+
+    facet_wrap(~model, ncol=1, scales='free_y')+
+    geom_vline(data=lambda.lines, aes(xintercept=lambda.min),
+               color = pubblue)+
+    geom_vline(data=lambda.lines, aes(xintercept=lambda.1se), 
+               color = pubmediumgray)+
+    scale_x_log10()+
+    geom_hline(yintercept = 0)+
+    scale_color_manual(values=cb.pal) +
+    theme_bw() +
+    labs(title='Trace Curves', x='Lambda', y='Coefficient')
+
+g
+```
+
+It seems the coefficients for the Ridge model are much more stable than the ones for the Lasso model, as most of the coefficients in the Ridge model are close between -0.1 and 0.1 for every lambda value, but in the Lasso model, the coefficients are more spread out, from around -3 to 2. Also, for the Ridge model, we see that only 3 band values are positive for all values of Lambda, namely B5, B4, and NDVI100. For the Lasso model, we see that B3, B6_VCID_2, B1, and NDVI100 are positive, but B4 becomes negative.
+
+Also, in the Lasso model, we see that most bands collapse to 0 as the values for Lambda increase. However, for NDVI100, it seems to decrease, then start following a linear pattern, and then decrease again. Additionally, in the Ridge model, it's interesting how most bands follow the same pattern, approaching 0 exponentially as Lambda increases, but B1 seems to first go farther away from 0 and then approach 0 exponentially like the other bands.
+
+## 2. Cross-validation
+Use cross-validation to make out of sample predictions for each observation and show the first 6 rows of the resulting data frame.
+
+```{r}
+# for reproducibility
+set.seed(123)
+
+# set number of folds (usually 5 or 10)
+k=5
+
+# create a vector of fold numbers, repeating 1:k until reaching the number of rows in the data
+folds = rep(1:k, 
+            length.out = nrow(dm))
+
+# create a new column in the data frame that randomly assigns a fold to each row without replacement 
+# (so that we don't have a row assigned to two or more folds)
+dm$fold = sample(folds, 
+                nrow(dm), 
+                replace = F)
+
+# view the first few rows of the data frame to see the fold assignments
+head(dm)
+```
+
+```{r}
+# create a data frame to keep track of the metrics
+metrics = data.frame(fold = 1:k,
+                     llr1se = NA, 
+                     llrmin = NA,
+                     lllas1se = NA,
+                     lllasmin = NA,
+                     llm1 = NA,
+                     llm2 = NA)
+
+# initialize the prediction columns
+dm[, c('r.1se', 'las.1se', 'r.min', 'las.min', 'm1pred', 'm2pred')] = NA
+
+# loop through the folds
+for (j in 1:k){
+  cat(j,'')
+  
+  ## train rows are the ones not in the j-th fold
+  train.rows <- dm$fold != j
+  
+  # test rows are the observations in the j-th fold
+  test.rows  <- dm$fold == j
+  
+  ## ======
+  ## fit models to training data
+  ## ======
+  
+  ## logistic regression with no regularization using only NDVI100
+  m1 = glm(veg ~ NDVI100, data = dm[train.rows, 1:10], family = "binomial")
+
+  ## logistic regression with no regularization using all band values
+  m2 = glm(veg ~ ., data = dm[train.rows,1:10], family = "binomial")
+  
+  ## logistic regression with ridge regularization using all band values
+  r.train <- cv.glmnet(x = x[train.rows,], y = dm$veg[train.rows], family = 'binomial', alpha = 0)
+  
+  ## logistic regression with lasso regularization using all band values
+  las.train <- cv.glmnet(x = x[train.rows,], y = dm$veg[train.rows], family = 'binomial', alpha = 1)
+  
+  ## ======
+  ## make predictions
+  ## ======
+  
+  dm$m1pred[test.rows] = predict(m1, newdata=dm[test.rows,], type='response')
+  dm$m2pred[test.rows] = predict(m2, newdata=dm[test.rows,], type='response')
+  dm$r.1se[test.rows] = predict(r.train, newx=x[test.rows,], s='lambda.1se', type='response')
+  dm$r.min[test.rows] = predict(r.train, newx=x[test.rows,], s='lambda.min', type='response')
+  dm$las.1se[test.rows] = predict(las.train, newx=x[test.rows,], s='lambda.1se', type='response')
+  dm$las.min[test.rows] = predict(las.train, newx=x[test.rows,], s='lambda.min', type='response')
+  
+  ## Test logloss for each fold
+  metrics[j,'llr1se'] = -mean(dm$veg[test.rows]*
+                                  log(dm$r.1se[test.rows]) +
+                                  (1-dm$veg[test.rows])*
+                                  log(1-dm$r.1se[test.rows]))
+  metrics[j,'llrmin'] = -mean(dm$veg[test.rows]*
+                                  log(dm$r.min[test.rows]) +
+                                  (1-dm$veg[test.rows])*
+                                  log(1-dm$r.min[test.rows]))
+  metrics[j,'lllas1se'] = -mean(dm$veg[test.rows]*
+                                  log(dm$las.1se[test.rows]) +
+                                  (1-dm$veg[test.rows])*
+                                  log(1-dm$las.1se[test.rows]))
+  metrics[j,'lllasmin'] = -mean(dm$veg[test.rows]*
+                                  log(dm$las.min[test.rows]) +
+                                  (1-dm$veg[test.rows])*
+                                  log(1-dm$las.min[test.rows]))
+  metrics[j,'llm1'] = -mean(dm$veg[test.rows]*
+                                  log(dm$m1pred[test.rows]) +
+                                  (1-dm$veg[test.rows])*
+                                  log(1-dm$m1pred[test.rows]))
+  metrics[j,'llm2'] = -mean(dm$veg[test.rows]*
+                                  log(dm$m2pred[test.rows]) +
+                                  (1-dm$veg[test.rows])*
+                                  log(1-dm$m2pred[test.rows]))
+  
+}
+
+```
+
+```{r}
+head(dm %>% select('r.1se', 'r.min', 'las.1se', 'las.min', 'm1pred', 'm2pred'))
+
+metrics
+```
+
+## 3. Log Loss 
+
+Compute log loss for all models. Compare across models, compare in-sample vs CV log loss, and discuss any notable observations. 
+
+```{r}
+logloss <- data.frame(m1 = NA,
+                      m2 = NA,
+                      m3 = NA,
+                      m4 = NA,
+                      m1out = NA,
+                      m2out = NA,
+                      r1se = NA,
+                      rmin = NA,
+                      las1se = NA,
+                      lasmin = NA)
+
+# Log loss of every model (in sample)
+logloss$m1 <- (-mean(dm$veg*log(dm$predm1) + (1-dm$veg)*log(1-dm$predm1)))
+logloss$m2 <- (-mean(dm$veg*log(dm$predm2) + (1-dm$veg)*log(1-dm$predm2)))
+logloss$m3 <- (-mean(dm$veg*log(dm$predm3) + (1-dm$veg)*log(1-dm$predm3)))
+logloss$m4 <- (-mean(dm$veg*log(dm$predm4) + (1-dm$veg)*log(1-dm$predm4)))
+
+# Log Loss of every model (out of sample)
+logloss$r1se <- (-mean(dm$veg*log(dm$r.1se) + (1-dm$veg)*log(1-dm$r.1se)))
+logloss$rmin <- (-mean(dm$veg*log(dm$r.min) + (1-dm$veg)*log(1-dm$r.min)))
+logloss$las1se <- (-mean(dm$veg*log(dm$las.1se) + (1-dm$veg)*log(1-dm$las.1se)))
+logloss$lasmin <- (-mean(dm$veg*log(dm$las.min) + (1-dm$veg)*log(1-dm$las.min)))
+logloss$m1out <- (-mean(dm$veg*log(dm$m1pred) + (1-dm$veg)*log(1-dm$m1pred)))
+logloss$m2out <- (-mean(dm$veg*log(dm$m2pred) + (1-dm$veg)*log(1-dm$m2pred)))
+
+logloss <- logloss %>% 
+  pivot_longer(cols = everything(), names_to = 'model', values_to = 'logloss') %>% 
+  mutate(sample = ifelse(model %in% c('m1', 'm2', 'm3', 'm4'), 'in', 'out'))
+
+logloss
+```
+
+Across in-sample vs. out-sample, the log loss for Ridge is consistently higher than the log loss for Lasso (see m3 vs. m4, r1se vs. las1se, and rmin vs. lasmin).
+
+It seems in-sample models have similar log loss to out-sample models (see m3 vs. r1se, m4 vs. las1se)
+
+Also, it appears that the log loss for the in-sample logistic regression with no regularization has the lowest log loss.
+
+It seems choosing lambda.min is better for both Ridge and Lasso models, as the log loss is lower for lambda.min in both models.
+
+\newpage
+# Partitioned matrices
+
+Note that if we have partitioned matrices, or matrices written in block form, we can add and multiply matrices as usual, as if the submatrices were scalars. Consider the following simple example. Suppose the $3\times3$ matrix $A$ given in block form as
+
+$$\underset{3\times 3}{A} = 
+\begin{pmatrix}
+\underset{2\times 2}{B} & \underset{2\times 1}{C} \\
+\underset{1\times 2}{D} & \underset{1\times 1}{E}
+\end{pmatrix}$$
+
+where $B$ is a $2\times2$ matrix, $C$ is $2\times1$, $D$ is $1\times2$, and $E$ is $1\times1$. Suppose $E$ is a $3\times1$ vector in block form
+
+$$\underset{3\times 1}{F} = 
+\begin{pmatrix}
+\underset{2\times 1}{G}  \\
+\underset{1\times 1}{H} 
+\end{pmatrix}$$
+
+where $G$ is $2\times1$ and $H$ is $1\times1$.
+
+For the following questions, you can write out your work for each question by hand and scan it, or write it up in LaTex in this document. 
+
+## 4. Block Transpose
+
+Show that the transpose of $A$, denoted $A^T$, is given by
+
+$$\underset{3 \times 3}{A}^T = 
+\begin{pmatrix}
+\underset{2 \times 2}{B}^T & \underset{2 \times 1}{D}^T \\
+\underset{1 \times 2}{C}^T & \underset{1 \times 1}{E}^T
+\end{pmatrix}$$
+
+(Write out $B = \begin{pmatrix} b_{11} & b_{12} \\ b_{21} & b_{22} \end{pmatrix}$, $C = \begin{pmatrix} c_{11} \\ c_{21} \end{pmatrix}$, etc., and take the transpose.)
+
+$$B = 
+\begin{pmatrix} 
+b_{11} & b_{12} \\ b_{21} & b_{22}
+\end{pmatrix} \; \rightarrow\; B^T = 
+\begin{pmatrix} 
+b_{11} & b_{21} \\ b_{12} & b_{22}
+\end{pmatrix}$$
+
+$$C = 
+\begin{pmatrix} 
+c_{11} \\ c_{21}
+\end{pmatrix}  \; \rightarrow\; C^T = 
+\begin{pmatrix} 
+c_{11} & c_{21}
+\end{pmatrix}$$
+
+$$D = 
+\begin{pmatrix} 
+d_{11} & d_{12}
+\end{pmatrix}  \; \rightarrow\; D^T =
+\begin{pmatrix} 
+d_{11} \\ d_{12}
+\end{pmatrix}$$
+
+$$E = 
+\begin{pmatrix} 
+e_{11}
+\end{pmatrix} \; \rightarrow\; E^T = 
+\begin{pmatrix} 
+e_{11}
+\end{pmatrix}$$
+
+Then, the matrix $A$ is given by:
+
+$$\underset{3 \times 3}{A} = 
+\begin{pmatrix}
+\underset{2 \times 2}{B} & \underset{2 \times 1}{C} \\
+\underset{1 \times 2}{D} & \underset{1 \times 1}{E}
+\end{pmatrix}$$
+
+So, the matrix ${A}^T$ is given by taking the transpose of the matrices, and the transpose of A, which will turn columns into rows, effectively flipping the position of D and C.
+
+## 5. Block Multiplication
+
+Show that
+
+$$\underset{3 \times 1}{AF} = 
+\begin{pmatrix}
+\underset{2 \times 1}{BG + CH} \\
+\underset{1 \times 1}{DG + EH} 
+\end{pmatrix}$$
+
+(Again, write out the matrices and multiply.)
+
+For $AF$ to be a $3 \times 1$ matrix, $A$ must be a $3 \times 3$ matrix, and $F$ must be a $3 \times 1$ matrix. \\
+
+Now we notice that $BG + CH$ and $DG + EH$ both share $G$ and $H$. So, consider the following the product of matrices:
+
+$$\underset{3 \times 3}{A} = 
+\begin{pmatrix}
+\underset{2 \times 2}{B} & \underset{2 \times 1}{C} \\
+\underset{1 \times 2}{D} & \underset{1 \times 1}{E}
+\end{pmatrix} \; \; \text{ , } \; \; \underset{3 \times 1}{F} = 
+\begin{pmatrix}
+\underset{2 \times 1}{G} \\
+\underset{1 \times 1}{H} 
+\end{pmatrix} \; \rightarrow \; \underset{3 \times 1}{AF} = \begin{pmatrix}
+\underset{2 \times 1}{BG + CH} \\
+\underset{1 \times 1}{DG + EH} 
+\end{pmatrix}$$
+
+For $BG$ to be ${2 \times 1}$ matrix, then $B$ must be ${2 \times 2}$ and $G$ must be $2 \times 1$. Also, $C$ must be ${2 \times 1}$ since we know that $H$ is ${1 \times 1}$ (otherwise $F$ can't be ${3 \times 1}$).
+
+Similarly, for $DG$ to be ${1 \times 1}$, then $D$ must be ${1 \times 2}$, since we know that $G$ is ${2 \times 1}$. Also, $E$ must be ${1 \times }1$ since $H$ is ${1 \times 1}$. Note that adding a ${1 \times 1}$ matrix with a ${1 \times 1}$ matrix results in a ${1 \times 1}$ matrix
+
+## 6. Ridge and OLS with Augmented Data
+
+ Using the previous two results, show ridge regression is like OLS but with augmented data. Specifically, consider
+
+$$\underset{(n+p) \times p}{\tilde{X}} = 
+\begin{pmatrix}
+\underset{n \times p}{X} \\
+\sqrt{\lambda} \underset{p \times p}{I} 
+\end{pmatrix}$$
+
+where $\underset{p \times p}{I}$ is a $p \times p$ identity matrix, and consider
+
+$$\underset{(n+p) \times 1}{\tilde{y}} = 
+\begin{pmatrix}
+\underset{n \times 1}{y} \\
+\underset{p \times 1}{0} 
+\end{pmatrix}$$
+
+where $0$ is a $p \times 1$ vector of all zeros. So $\tilde{X}$ is like $X$ that has been augmented with some extra rows, and $\tilde{y}$ is like $y$ that has been augmented with some extra zeros. Show that, for a given $\lambda$, the OLS estimates of $\tilde{y} = \tilde{X} \beta$ are the same as the ridge estimates of $y = X\beta$. (Start by writing $\tilde{X}^T\tilde{X}$ and $\tilde{X}^T \tilde{y}$.)
+
+The OLS solution to $\tilde{y} = \tilde{X}\beta$ is $$(\tilde{X}^T\tilde{X})\beta = \tilde{X}^T\tilde{y}$$
+
+where
+
+$$\underset{n \times (n+p)}{\tilde{X}^T} = 
+\begin{pmatrix}
+\underset{n \times p}{X} &
+\sqrt{\lambda} \underset{p \times p}{I} 
+\end{pmatrix}$$
+
+so 
+
+$$\underset{n \times p}{\tilde{X}^T\tilde{X}} = 
+\begin{pmatrix}
+\underset{n \times p}{X} &
+\sqrt{\lambda} \underset{p \times p}{I} 
+\end{pmatrix} \times \begin{pmatrix}
+\underset{n \times p}{X} \\
+\sqrt{\lambda} \underset{p \times p}{I} 
+\end{pmatrix} = \begin{pmatrix}
+{X^TX + \lambda I}
+\end{pmatrix}$$
+
+Also, 
+
+$$\underset{n \times 1}{\tilde{X}^T\tilde{y}} = 
+\begin{pmatrix}
+\underset{n \times p}{X} &
+\sqrt{\lambda} \underset{p \times p}{I} 
+\end{pmatrix} \times \begin{pmatrix}
+\underset{n \times 1}{y} \\
+\underset{p \times 1}{0} 
+\end{pmatrix} = X^Ty$$
+
+Thus, the OLS solution to $\tilde{y} = \tilde{X}\beta$ can be re-written as $(X^TX + \lambda I)\beta = X^Ty$, which is exactly the same as the ridge estimates of $y = X\beta$
+
+\newpage
+# NBA Games
+ 
+Let's load and prep the data. 
+
+```{r}
+d = readRDS('data/games.rds') 
+tms = read.csv('data/nba.teams.csv')
+
+d = d %>% 
+  filter(lg=='nba', season %in% 2022, season.type=='reg') %>%
+  dplyr::select(date, away, home, ascore, hscore, season, gid)
+
+
+da = d %>% dplyr::select(date, away, ascore, home, hscore, season, gid) %>% mutate(ha = 'away')
+dh = d %>% dplyr::select(date, home, hscore, away, ascore, season, gid) %>% mutate(ha = 'home')
+colnames(da) = c('date', 'team', 'score',  'opp', 'opp.score', 'season', 'gid', 'ha')
+colnames(dh) = c('date', 'team', 'score',  'opp', 'opp.score', 'season', 'gid', 'ha')
+d = bind_rows(da, dh) %>% 
+  arrange(date, gid) %>%
+  left_join(tms %>% dplyr::select(team, div), 
+            by = c('team'='team')) %>%
+  left_join(tms %>% dplyr::select(team, div), 
+            by = c('opp'='team'), suffix=c('.team', '.opp'))
+head(d)
+```
+
+Here is a function for extracting coefficients that we used in class.
+
+```{r}
+extract.ranef = function(lmer.model=NULL, lm.model=NULL){
+  
+  vars = names(ranef(lmer.model))
+  lmer.coefs = NULL
+  lm.coefs = NULL
+  
+  if(!is.null(lm.model)){
+    lm.coefs = summary(lm.model)$coefficients %>%
+      as.data.frame() %>%
+      rownames_to_column(var='var') %>%
+      filter(grepl(paste0(vars, collapse="|"), var)) %>%
+      rename(est='Estimate',
+             se ='Std. Error') %>%
+      dplyr::select(var, est, se) %>%
+      mutate(model='glm')
+  }
+  
+  for (j in vars){
+    
+    ## lmer
+    est = ranef(lmer.model)[[j]] 
+    se  = se.ranef(lmer.model)[[j]] 
+    colnames(est) = 'est'
+    colnames(se) = 'se'
+    temp = data.frame(var = rownames(est), 
+                      est=est, 
+                      se=se, 
+                      model='glmer',
+                      ranef = j)
+    lmer.coefs = rbind(lmer.coefs, temp)
+    
+    ## lm
+    if(!is.null(lm.model)){
+      rows=grepl(j, lm.coefs$var)
+      lm.coefs$var[rows] = lm.model$xlevels[[j]][-length(lm.model$xlevels[[j]])]
+      lm.coefs$ranef[rows] = j
+      
+    } ## if lm.model
+    
+  } ## end j loop
+  
+  coefs = rbind(lmer.coefs, lm.coefs)
+  return(coefs)
+}
+```
+
+## 7. Random effects for team and opp
+
+Previously we used `ha`, `team` and `opp` to predict `score`. Fit a linear regression model with outcome `score` and predictors `ha`, `team`, and `opp`, as well as a similar mixed effects linear regression model with both `team` and `opp` as random effects terms. Create visualizations that help you compare the coefficients obtained from the two models. Discuss any observations. 
+
+```{r}
+## linear regression model
+lm1 <- lm(score ~ ha + team + opp, data = d, contrasts = list(team = 'contr.sum',
+                                                              opp = 'contr.sum'))
+
+## mixed effects linear regression model
+lmer1 <- lmer(score ~ ha + (1|team) + (1|opp), data = d)
+```
+
+```{r}
+# extract coefficients
+coefs = extract.ranef(lmer1, lm1)
+head(coefs)
+```
+
+To see how many observations we have per team:
+
+```{r}
+n.obs.team = d %>% 
+  group_by(team) %>% 
+  summarise(n = n(), 
+            value = mean(score)) %>% 
+  rename(var = team) %>%
+  mutate(ranef = 'team')
+n.obs.team %>% head()
+
+n.obs.opp = d %>% 
+  group_by(opp) %>% 
+  summarise(n = n(), 
+            value = mean(score)) %>% 
+  rename(var = opp) %>%
+  mutate(ranef = 'opp')
+n.obs.opp %>% head()
+```
+
+We see that every team had 82 observations since they all played in the season.
+
+```{r}
+n.obs = rbind(n.obs.team, n.obs.opp)
+df = coefs %>%
+  pivot_wider(names_from  = model, 
+              values_from = c(est, se), 
+              names_sep   = '.') %>%
+  left_join(n.obs, 
+            by = c('var', 'ranef')) 
+head(df)
+tail(df)
+```
+```{r, warning = FALSE, fig.width=8, fig.height=8}
+dg2 = coefs %>%
+  arrange(model, est) %>%
+  mutate(var = factor(var, levels = unique(var))) %>%
+  left_join(n.obs, 
+            by = c('var', 'ranef'))
+
+g <- ggplot(df, 
+       aes(x = est.glm, 
+           y = est.glmer, 
+           color = ranef, 
+           label = var)) +
+  geom_abline(slope = 1, 
+              intercept = 0) + 
+  geom_hline(yintercept = 0) + 
+  geom_segment(aes(xend = est.glm, 
+                   y = est.glmer + se.glmer, 
+                   yend = est.glmer - se.glmer), 
+               color = pubblue, 
+               linewidth = 0.25, 
+               alpha = 0.3)+
+  geom_segment(aes(xend = est.glm, 
+                   y = est.glm + se.glm, 
+                   yend = est.glm - se.glm), 
+               color = pubred, 
+               linewidth = 0.25, 
+               alpha = 0.3) +
+  geom_point(color = pubblue) + 
+  geom_point(aes(y = est.glm),
+             color = pubred) +
+  geom_text_repel(hjust = -0.2,
+                  size = 3,
+                  color = pubmediumgray) +
+  facet_wrap(~ranef, nrow = 1) +
+  coord_cartesian(clip='off', expand=F)
+
+g %>% pub()
+  
+
+gg = ggplot(dg2, 
+       aes(y = var, 
+           color = model))+
+  geom_vline(xintercept = 0, 
+             color = pubmediumgray)+
+  geom_point(aes(x = est)) + 
+  facet_wrap(~ranef) +
+  geom_segment(aes(x     = est + se, 
+                   xend  = est - se, 
+                   y     = var, 
+                   yend  = var), 
+               linewidth = 0.5) 
+
+
+gg |> pub()
+```
+
+We see that the coefficients are similar between models for both opp and team. It seems the coefficients for the GLMER are slightly lower, meaning they are pulled to 0 due to regularization. The number of observations does not play a role here because each team is involved in exactly 82 games in a regular season.
+
+## 8. Cross-validation
+
+Perform cross-validation, compare the performance of the two models, discuss the results, and state which model you prefer and why.
+
+```{r}
+# for reproducibility
+set.seed(123)
+
+# set number of folds (usually 5 or 10)
+k=5
+
+# create a vector of fold numbers, repeating 1:k until reaching the number of rows in the data
+folds = rep(1:k, 
+            length.out = nrow(d))
+
+# create a new column in the data frame that randomly assigns a fold to each row without replacement 
+# (so that we don't have a row assigned to two or more folds)
+d$fold = sample(folds, 
+                nrow(d), 
+                replace = F)
+
+# view the first few rows of the data frame to see the fold assignments
+head(d)
+```
+
+```{r, warning=FALSE}
+d <- d %>% filter(!is.na(score))
+
+#initialize columns
+d[,c('lm', 'lmer')] = NA
+
+# loop through the folds
+for (j in 1:k){
+  cat(j,'') ## print out the progress
+  
+  ## train rows are the ones not in the j-th fold
+  train.rows = d$fold != j
+  
+  # test rows are the observations in the j-th fold
+  test.rows  = d$fold == j
+  
+  ## fit model on training data
+  ## linear regression model
+  lm1 <- lm(score ~ ha + team + opp, data = d[train.rows,])
+  
+  ## mixed effects linear regression model
+  lmer1 <- lmer(score ~ ha + (1|team) + (1|opp), data = d[train.rows,])
+  
+  ## make predictions
+  d$lm[test.rows] = predict(lm1, newdata=d[test.rows,], type='response')
+  d$lmer[test.rows] = predict(lmer1, newdata=d[test.rows,], type='response')
+}
+```
+
+To calculate the RMSE for the models:
+
+```{r}
+sqrt(mean((d$lm    - d$score)^2, na.rm=T))
+sqrt(mean((d$lmer  - d$score)^2, na.rm=T))
+```
+
+The RMSE are almost identical. Also, since the coefficients are similar between models for both opp and team, then I would choose the model with lower RMSE, which in this case is the GLMER model.
+
+# EV Charging Stations
+
+Let's load and clean our charging station data. 
+
+```{r}
+dc = readRDS('data/tracts.and.census.with.EV.stations.rds')
+dc = dc@data
+
+## create a indicator for whether there is at least 
+## one lev2 station in each tract
+dc = dc %>% 
+  mutate(l2 = ifelse(lev2 > 0 , 1,  0), 
+         l2 = ifelse(is.na(l2), 0, l2)) 
+
+```
+
+If you have trouble answering these questions with the full data, use this line of code to take a random sample of 5,000 tracts.  Doing this will eliminate any memory issues you might have.
+
+```{r}
+dc = dc[sample(1:nrow(dc), 
+               5000, 
+               replace = F),] 
+```
+
+
+## 9. County as predictor
+
+There are 866 counties in the US, so using county as a predictor adds 865 columns to a logistic regression model, which may not be ideal. Build a logistic regression model with `log(house.value)` and `county` as predictors, and a mixed effects logistic regression model with `log(house.value)` a random intercept for `county`. Create visualizations that help you compare the coefficients. Discuss any observations. 
+
+Since we want a logistic regression, then our variable must be binary. Thus, we will be predicting the `l2` variable, which indicates whether a tract has lev2 or lev3 charging stations.
+
+```{r, warning=FALSE}
+lm <- lm(l2 ~ log(house.value) + county, data = dc, family = binomial, contrasts = list(county = 'contr.sum'))
+lmer <- glmer(l2 ~ log(house.value) + (1|county), data = dc, family = binomial)
+```
+
+We now extract the coefficients:
+
+```{r}
+coeffs = extract.ranef(lmer, lm)
+head(coeffs)
+```
+```{r}
+n.obs.county = dc %>% 
+  group_by(county) %>% 
+  summarise(n = n(), 
+            value = mean(l2)) %>% 
+  rename(var = county) %>%
+  mutate(ranef = 'county')
+n.obs.county %>% head()
+
+
+dff = coeffs %>%
+  pivot_wider(names_from  = model, 
+              values_from = c(est, se), 
+              names_sep   = '.') %>%
+  left_join(n.obs.county, 
+            by = c('var', 'ranef')) 
+
+head(dff)
+tail(dff)
+```
+
+We see that counties have very different number of observations, which might impact the model.
+
+```{r, fig.width=8, fig.height=8, warning = FALSE}
+dgg2 = coeffs %>%
+  filter(ranef == 'county') %>%
+  arrange(model, est) %>%
+  mutate(var = factor(var, levels = unique(var))) %>%
+  left_join(n.obs, 
+            by = c('var', 'ranef'))
+
+g2 = ggplot(dff %>% 
+             filter(ranef == 'county'), 
+       aes(x = est.glm, 
+           y = est.glmer, 
+           label = var))+
+  geom_abline(slope = 1, 
+              intercept = 0) + 
+  geom_hline(yintercept = 0) + 
+  geom_point(color = pubdarkgray) + 
+  geom_text_repel(hjust = -.2, 
+                  color = pubmediumgray) +
+  labs(title = 'County Coefficients', 
+       x = 'GLM', 
+       y = 'GLMER')
+
+g2 <- ggplot(dff, 
+       aes(x = est.glm, 
+           y = est.glmer, 
+           color = ranef, 
+           label = var)) +
+  geom_abline(slope = 1, 
+              intercept = 0) + 
+  geom_hline(yintercept = 0) + 
+  geom_segment(aes(xend = est.glm, 
+                   y = est.glmer + se.glmer, 
+                   yend = est.glmer - se.glmer), 
+               color = pubblue, 
+               linewidth = 0.25, 
+               alpha = 0.3)+
+  geom_segment(aes(xend = est.glm, 
+                   y = est.glm + se.glm, 
+                   yend = est.glm - se.glm), 
+               color = pubred, 
+               linewidth = 0.25, 
+               alpha = 0.3) +
+  geom_point(color = pubblue) + 
+  geom_point(aes(y = est.glm),
+             color = pubred) +
+  coord_cartesian(clip='off', expand=F)
+
+g2 %>% pub()
+```
+
+It seems all the coefficients get pulled to 0. This is most likely because most counties only have a few observations, while others have many more observations.
+
+
+## 10. Cross-validation
+
+Perform cross-validation, compare the performance of the two models, discuss the results, and state which model you prefer and why.
+
+```{r}
+dcc <- dc |> select(l2, county, house.value)
+
+# for reproducibility
+set.seed(123)
+
+# set number of folds (usually 5 or 10)
+k=5
+
+# create a vector of fold numbers, repeating 1:k until reaching the number of rows in the data
+folds = rep(1:k, 
+            length.out = nrow(dcc))
+
+# create a new column in the data frame that randomly assigns a fold to each row without replacement 
+# (so that we don't have a row assigned to two or more folds)
+dcc$fold = sample(folds, 
+                nrow(dcc), 
+                replace = F)
+
+# view the first few rows of the data frame to see the fold assignments
+head(dcc)
+```
+
+
+```{r, warning=FALSE}
+metrics <- data.frame(fold = 1:k,
+                     logloss1 = NA, 
+                     logloss2 = NA)
+
+dcc[,c('lm', 'lmer')] = NA
+
+dcc <- dcc %>% filter(county != "Kodiak Island Borough",
+                      county != "Tuolumne County",
+                      county != "Albemarle County")
+
+for (j in 1:k){
+  cat(j,'')
+
+  train.rows = dcc$fold != j
+  test.rows  = dcc$fold == j
+
+  # the models are already defined in question 9, so only need to predict
+  dcc$lm[test.rows] = predict(lm, newdata=dcc[test.rows,], type='response')
+  dcc$lmer[test.rows] = predict(lmer, newdata=dcc[test.rows,], type='response')
+}
+```
+
+```{r}
+sqrt(mean((dcc$lm    - dcc$l2)^2, na.rm=T))
+sqrt(mean((dcc$lmer  - dcc$l2)^2, na.rm=T))
+
+roc.glm = roc(dcc$l2, dcc$lm)
+roc.glmer = roc(dcc$l2, dcc$lmer)
+
+roc.glm$auc
+roc.glmer$auc
+```
+
+Since the RMSE for the non-mixed effects model is lower, we prefer that one. Also, the AUC for the non-mixed effects model is higher, which is another reason to prefer it.

@@ -1,0 +1,8 @@
+"0","n.obs = rbind(n.obs.team, n.obs.opp)"
+"0","df = coefs %>%"
+"0","  pivot_wider(names_from  = model, "
+"0","              values_from = c(est, se), "
+"0","              names_sep   = '.') %>%"
+"0","  left_join(n.obs, "
+"0","            by = c('var', 'ranef')) "
+"0","head(df)"

@@ -1,0 +1,3 @@
+"0","# extract coefficients"
+"0","coefs = extract.ranef(lmer1, lm1)"
+"0","head(coefs)"

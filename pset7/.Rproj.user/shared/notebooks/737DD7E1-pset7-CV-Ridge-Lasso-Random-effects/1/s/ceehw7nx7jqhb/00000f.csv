@@ -1,0 +1,11 @@
+"0","dc = readRDS('data/tracts.and.census.with.EV.stations.rds')"
+"2","Loading required package: sp
+"
+"0","dc = dc@data"
+"0",""
+"0","## create a indicator for whether there is at least "
+"0","## one lev2 station in each tract"
+"0","dc = dc %>% "
+"0","  mutate(l2 = ifelse(lev2 > 0 , 1,  0), "
+"0","         l2 = ifelse(is.na(l2), 0, l2)) "
+"0",""

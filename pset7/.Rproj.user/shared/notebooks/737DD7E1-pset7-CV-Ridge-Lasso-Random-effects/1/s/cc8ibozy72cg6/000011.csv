@@ -1,0 +1,2 @@
+"0","coeffs = extract.ranef(lmer, lm)"
+"0","head(coeffs)"
