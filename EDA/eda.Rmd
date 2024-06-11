@@ -173,7 +173,8 @@ g %>%
   pub(type = 'hist', 
       facet = T, 
       base_size = 9)
-  
+
+ggsave("img/density_plot_per_band.png", plot = g)
 ```
 
 Scatter plot of bands vs veg
@@ -198,6 +199,8 @@ g %>%
       facet = T, 
       base_size = 9, 
       ybreaks = c(0, 0.5, 1))
+
+ggsave("img/scatter_plot_bands_vs_veg.png", plot = g)
 ```
 
 It seems most band values have a logistic relationship with `veg`.
@@ -227,7 +230,6 @@ dcor = dm %>%
   cor(use = 'pairwise.complete.obs')
 dcor %>% round(2)
 corrplot(dcor)
-
 ```
 
 Pairs plot with points colored by `veg`. We omit some bands that are highly correlated with others to make the plot more readable. 
@@ -253,6 +255,8 @@ g = ggpairs(dg,
   theme_pub(type = 'pairs', 
             base_size = 8)
 g
+
+ggsave("img/pair_plot_bands.png", plot = g)
 ```
 
 We can tell from this plot which variables or pairs of variables will likely help. If we focus on the line `NDVI` = 0, we can see that as `NDBI` and `B7` increase  the proportion of `veg` decreases.  The "boundary line" between `veg = 1` and `veg = 0` looks like it has a negative slope, and there are more `veg = 1` above that boundary line.  
@@ -296,6 +300,8 @@ g = ggplot(dd,
        base_size = 10,
        xbreaks = c(2018, 2019, 2020), 
        xlabels = as.character(c(2018, 2019, 2020))) 
+ 
+ggsave("img/line_plot_bands_over_time.png", plot = g)
 ```
 
 # `veg` and mean NDVI
@@ -436,6 +442,7 @@ g2 = g +
 g2 %>% 
   pub(facet = T)
 
+ggsave("img/scatter_plot_bands_vs_veg_dot.png", plot = g2)
 ```
 
 As we would expect, there is a positive relationship between `NDVI` and `veg` but a negative relationship between `NDBI` and `veg`. We can get a rough idea of the relative strength of these relationships as well by looking at the steepness of the curve. For example, `NDVI` appears to have a very strong relationship to `B4` is less strong.

@@ -95,10 +95,6 @@ dm$predm4 <- predict(m4, newx = x, s = 'lambda.1se', type = 'response')
 summary(m4)
 ```
 
-```{r}
-head(dm)
-```
-
 To find the trace curves, we need to plot the coefficients as functions of lambda:
 
 ```{r, warning=FALSE}
@@ -153,6 +149,8 @@ g <- ggplot(data=dg, aes(x=lambda, y=value, group=var, color=var))+
     labs(title='Trace Curves', x='Lambda', y='Coefficient')
 
 g
+
+ggsave('img/trace_curves.png', g, width=8, height=8)
 ```
 
 It seems the coefficients for the Ridge model are much more stable than the ones for the Lasso model, as most of the coefficients in the Ridge model are close between -0.1 and 0.1 for every lambda value, but in the Lasso model, the coefficients are more spread out, from around -3 to 2. Also, for the Ridge model, we see that only 3 band values are positive for all values of Lambda, namely B5, B4, and NDVI100. For the Lasso model, we see that B3, B6_VCID_2, B1, and NDVI100 are positive, but B4 becomes negative.
@@ -175,7 +173,7 @@ folds <- rep(1:k, length.out = nrow(dm))
 # create a new column in the data frame that randomly assigns a fold to each row without replacement 
 # (so that we don't have a row assigned to two or more folds)
 dm$fold <- sample(folds, 
-                  row(dm), 
+                  nrow(dm), 
                   replace = F)
 
 # view the first few rows of the data frame to see the fold assignments
