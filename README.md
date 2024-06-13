@@ -1,6 +1,6 @@
 # Landcover Classification
 
-Satellite data can be used to estimate the type of landcover at locations around the world. This approach can be an time and cost effective alternative to manually inspecting these locations in person. In this report, we will explore a data set containing satellite data and manually labeled landcover types for locations in Benin. We will use this data to build a model that predicts the landcover type at a location based on the satellite data.
+Satellite data can be used to estimate the type of land cover at locations around the world. This approach can be a time and cost-effective alternative to manually inspecting these locations in person. In this report, we will explore a data set containing satellite data and manually labeled landcover types for locations in Benin. We will use this data to build a model that predicts the landcover type at a location based on the satellite data.
 
 **Landcover types:**
 
